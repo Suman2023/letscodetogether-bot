@@ -15,6 +15,8 @@ Author: Suman Mitra
 ©️ https://youtube.com/@LetsCodeTogether
 """
 import os
+import sqlite3
+from datetime import datetime, timedelta
 
 import telebot
 from telebot.types import ChatPermissions
@@ -131,6 +133,70 @@ def admin_only(func):
     return wrapper
 
 
+# This function handles the warnings a user gets and save it to db and ban the user aftr 3 offense for 14 days
+def act_on_warnings(username, chat_id, user_id):
+    now = datetime.now()
+    fourteen_days_later = now + timedelta(days=14)
+    with sqlite3.connect("users.db") as conn:
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, warnings INTEGER, banned INTEGER)"""
+            )
+
+            cursor.execute(
+                "SELECT warnings,banned FROM users WHERE name = ?", (username,)
+            )
+
+            result = cursor.fetchone()
+
+            if result is None:
+                cursor.execute(
+                    "INSERT INTO users(name,warnings,banned) VALUES (?, ?, ?)",
+                    (username, 1, 0),
+                )
+                bot.send_message(
+                    chat_id,
+                    f"1 of 3 WARNING to @{username}.\nOffensive words are not tolerated here.",
+                    parse_mode="Markdown",
+                )
+            elif result[0] < 2:
+                cursor.execute(
+                    "UPDATE users SET warnings=? WHERE name=? ",
+                    (result[0] + 1, username),
+                )
+                bot.send_message(
+                    chat_id,
+                    f"{result[0]+ 1} of 3 WARNING to @{username}.\nOffensive words are not tolerated here.",
+                    parse_mode="Markdown",
+                )
+            else:
+                # if they were banned and was brought back we rst the warnings
+                if result[1]:
+                    cursor.execute(
+                        "UPDATE users SET warnings=?, banned=? WHERE name=? ",
+                        (1, 0, username),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE users SET warnings=?, banned=? WHERE name=? ",
+                        (result[0] + 1, 1, username),
+                    )
+                    bot.ban_chat_member(
+                        chat_id=chat_id, user_id=user_id, until_date=fourteen_days_later
+                    )
+                    bot.send_message(
+                        chat_id,
+                        f"@{username} has been banned from the Group for continously using offensive words even though warnings were given.\n **PLEASE BE KIND AND RESPECTFUL TO EACH OTHER**",
+                        parse_mode="Markdown",
+                    )
+        except Exception as e:
+            print(e)
+        finally:
+            conn.commit()
+
+
 # This are some of the custom commands that the bot response to
 commands = ["/start", "/help"]
 
@@ -228,13 +294,15 @@ def reason_for_leaving(message):
     current_user = message.from_user.username
     current_user_id = message.from_user.id
     # bot.reply_to(message, get_help_message(current_user=current_user))
-    print(message)
-    bot.send_message(
-        current_user_id,
-        get_leaving_message(current_user=current_user),
-        reply_markup=inline_keyboard_markup,
-        parse_mode="Markdown",
-    )
+    try:
+        bot.send_message(
+            current_user_id,
+            get_leaving_message(current_user=current_user),
+            reply_markup=inline_keyboard_markup,
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        print(e)
 
 
 # This just reply you with the same message You sent except if sent any command
@@ -253,6 +321,7 @@ def clean_chat(message):
     chat_id = message.chat.id
     from_user = message.from_user
     current_user = message.from_user.username
+    current_user_id = message.from_user.id
     if from_user:
         is_bot = from_user.is_bot
         if not is_bot and (
@@ -261,10 +330,8 @@ def clean_chat(message):
         ):
             bot.delete_message(message.chat.id, message.message_id)
             # here we need to store this in db
-            bot.send_message(
-                chat_id,
-                f"Last WARNING to @{current_user}.\nOffensive words are not tolerated here.",
-                parse_mode="Markdown",
+            act_on_warnings(
+                username=current_user, chat_id=chat_id, user_id=current_user_id
             )
 
 
